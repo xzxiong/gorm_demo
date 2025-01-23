@@ -5,18 +5,19 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-	"gorm.io/gorm/schema"
 	"net"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"gorm.io/gorm/schema"
+
 	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/pires/go-proxyproto"
@@ -38,7 +39,7 @@ type Config struct {
 	ClientIP string `json:"clientIP" yaml:"clientIP"`
 }
 
-func connDBForUser(ctx context.Context, cfg Config, log logger.Interface) (*gorm.DB, error) {
+func connDBForUser(ctx context.Context, cfg Config, log gormlogger.Interface) (*gorm.DB, error) {
 	// conn for user
 	var (
 		user *gorm.DB
@@ -46,7 +47,7 @@ func connDBForUser(ctx context.Context, cfg Config, log logger.Interface) (*gorm
 	var eg errgroup.Group
 	// conn for user
 	eg.Go(func() error {
-		conn, err := OpenDB(cfg, log)
+		conn, err := OpenDB(cfg, log, InterpolateParams(true))
 		if err != nil {
 			return err
 		}
@@ -55,7 +56,7 @@ func connDBForUser(ctx context.Context, cfg Config, log logger.Interface) (*gorm
 			return err
 		}
 		cp.SetMaxOpenConns(1)
-		cp.SetConnMaxLifetime(time.Hour * 2)
+		cp.SetConnMaxLifetime(time.Minute * 30)
 
 		user = conn
 		return nil
@@ -66,8 +67,18 @@ func connDBForUser(ctx context.Context, cfg Config, log logger.Interface) (*gorm
 	return user, nil
 }
 
+type MysqlConfigOption func(*mysql.Config)
+
+// InterpolateParams
+// more details in https://github.com/go-sql-driver/mysql?tab=readme-ov-file#interpolateparams
+func InterpolateParams(v bool) MysqlConfigOption {
+	return func(c *mysql.Config) {
+		c.InterpolateParams = v
+	}
+}
+
 // OpenDB initializes db connection
-func OpenDB(cfg Config, logger logger.Interface) (*gorm.DB, error) {
+func OpenDB(cfg Config, logger gormlogger.Interface, opts ...MysqlConfigOption) (*gorm.DB, error) {
 	mysqlCfg := mysql.NewConfig()
 	mysqlCfg.User = cfg.Username
 	mysqlCfg.Passwd = cfg.Password
@@ -76,6 +87,10 @@ func OpenDB(cfg Config, logger logger.Interface) (*gorm.DB, error) {
 	mysqlCfg.AllowNativePasswords = true
 	mysqlCfg.ParseTime = true
 	mysqlCfg.Timeout = time.Second * 30
+
+	for _, opt := range opts {
+		opt(mysqlCfg)
+	}
 
 	connector, err := mysql.NewConnector(mysqlCfg)
 	if err != nil {
@@ -148,6 +163,21 @@ func NewLogger(zapLogger *zap.Logger) Logger {
 		SkipCallerLookup:          false,
 		IgnoreRecordNotFoundError: false,
 	}
+}
+
+// NewExampleZapLogger copy from zap.NewExample
+func NewExampleZapLogger(options ...zap.Option) *zap.Logger {
+	encoderCfg := zapcore.EncoderConfig{
+		MessageKey:     "msg",
+		LevelKey:       "level",
+		TimeKey:        "ts",
+		NameKey:        "logger",
+		EncodeLevel:    zapcore.LowercaseLevelEncoder,
+		EncodeTime:     zapcore.ISO8601TimeEncoder,
+		EncodeDuration: zapcore.StringDurationEncoder,
+	}
+	core := zapcore.NewCore(zapcore.NewJSONEncoder(encoderCfg), os.Stdout, zap.DebugLevel)
+	return zap.New(core).WithOptions(options...)
 }
 
 func logLevelAdapter(logger *zap.Logger) gormlogger.LogLevel {

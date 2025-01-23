@@ -72,7 +72,8 @@ func testContextTimeout() {
 
 	logger = NewLogger(NewExampleZapLogger())
 
-	db, err := connDBForUser(ctx, dbCfg, logger)
+	// conn db, got GORM conn
+	conn, err := connDBForUser(ctx, dbCfg, logger)
 	if err != nil {
 		logger.Error(ctx, "Create db connection failed for %s: %v", dbCfg.Username, err)
 		return
@@ -81,8 +82,9 @@ func testContextTimeout() {
 	timeoCtx, timeoCancel := context.WithTimeoutCause(ctx, 3*time.Second, fmt.Errorf("client-timeout"))
 	defer timeoCancel()
 	logger.Info(ctx, "startup")
-	db.WithContext(timeoCtx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("select sleep(10)").Error; err != nil {
+	conn.WithContext(timeoCtx).Transaction(func(tx *gorm.DB) error {
+		// 通过外部 lock test.user_info 可构造 timeout 的情况
+		if err := tx.Exec("update test.user_info set name ='xzxiong' where id = 1;").Error; err != nil {
 			logger.Error(ctx, "exec sql: %v", err)
 			return err
 		}
